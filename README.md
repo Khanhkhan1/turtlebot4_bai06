@@ -5,6 +5,8 @@ OpenCV reads the webcam, the MediaPipe Gesture Recognizer classifies the hand, a
 turns the gestures into `/cmd_vel` behaviors. Simulation from
 [bài 04](https://github.com/Khanhkhan1/turtlebot4_bai04); no map or Nav2.
 
+**Video demo:** https://drive.google.com/file/d/1ZBZYG4bKOdI0HT6nV3zjbc9GY0d5UPN2/view?usp=sharing
+
 ```
 webcam --OpenCV--> gesture_recognition_node (MediaPipe + wave detection + debounce)
        --/detected_gesture (std_msgs/String, 10 Hz)--> robot_behavior_node (state machine)
