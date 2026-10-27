@@ -266,8 +266,10 @@ class GestureRecognitionNode(Node):
             text = "Wave" if waving else f"{raw} {score:.2f}"
             # above the hand, or below it when that would hide it under the text panel
             y_text = y0 - 18 if y0 - 18 > 115 else min(h - 30, y1 + 38)
-            cv2.putText(frame, text, (max(5, min(x0 - 10, w - 230)), y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                        (0, 255, 255), 2, cv2.LINE_AA)
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+            x_text = max(5, min(x0 - 10, w - tw - 5))
+            cv2.rectangle(frame, (x_text - 4, y_text - th - 6), (x_text + tw + 4, y_text + 7), (0, 0, 0), -1)
+            cv2.putText(frame, text, (x_text, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
 
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (w, 92), (0, 0, 0), -1)
