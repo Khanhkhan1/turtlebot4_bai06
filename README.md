@@ -24,8 +24,9 @@ Gazebo overview camera --/overview_camera/image--> RViz2 ("Gazebo view")
 | Open_Palm | stops at once (Thumb_Up continues) |
 | Closed_Fist | cancels, back to IDLE |
 
-The robot moves only after Thumb_Up. A gesture counts once it is held for 0.5 s (0.2 s for
-Open_Palm / Closed_Fist) and only when it changes; select/confirm commands have a 1 s cooldown.
+The robot moves only after Thumb_Up. A gesture counts once it is held for 0.5 s (Open_Palm 0.2 s;
+Closed_Fist 0.6 s, as the hand passes through a fist between two gestures) and only when it
+changes; select/confirm commands have a 1 s cooldown.
 The robot stops when `/detected_gesture` is silent for 1 s (camera or node lost).
 `wave_needs_confirm:=false` makes Wave start the greeting directly.
 

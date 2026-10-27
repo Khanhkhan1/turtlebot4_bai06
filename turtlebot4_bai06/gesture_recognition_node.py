@@ -20,6 +20,7 @@ import cv2
 import mediapipe as mp
 import rclpy
 from mediapipe.tasks.python import BaseOptions, vision
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -33,10 +34,6 @@ HAND_CONNECTIONS = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 
                     (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (17, 18),
                     (18, 19), (19, 20), (0, 17)]
 TIPS, PIPS = (8, 12, 16, 20), (6, 10, 14, 18)
-# Stop and cancel react faster than the gestures that select or start a behavior.
-FAST = ("Open_Palm", "Closed_Fist")
-
-
 def open_hand(landmarks):
     """At least 3 of the 4 fingers stretched: fingertip farther from the wrist than its middle joint."""
     w = landmarks[0]
@@ -45,21 +42,28 @@ def open_hand(landmarks):
 
 
 class GestureFilter:
-    """Debounce: a gesture becomes the output once the model reports it for its hold time in a row."""
+    """Debounce: a gesture becomes the output once the model reports it for its hold time in a row.
+    Another label for less than `grace` seconds (a flicker) does not restart the count."""
 
-    def __init__(self, hold, fast_hold, none_hold):
-        self.hold, self.fast_hold, self.none_hold = hold, fast_hold, none_hold
+    def __init__(self, holds, default_hold, grace=0.15):
+        self.holds, self.default_hold, self.grace = holds, default_hold, grace
         self.output = self.candidate = "None"
-        self.since = 0.0
+        self.since = self.last_seen = 0.0
+        self.change_at = None
 
     def hold_for(self, label):
-        return self.none_hold if label == "None" else self.fast_hold if label in FAST else self.hold
+        return self.holds.get(label, self.default_hold)
 
     def update(self, label, now):
-        if label != self.candidate:
-            self.candidate, self.since = label, now
-        if label != self.output and now - self.since >= self.hold_for(label):
-            self.output = label
+        if label == self.candidate:
+            self.last_seen, self.change_at = now, None
+        else:
+            if self.change_at is None:
+                self.change_at = now
+            if now - self.last_seen > self.grace:   # not a flicker: the hand changed
+                self.candidate, self.since, self.last_seen, self.change_at = label, self.change_at, now, None
+        if self.candidate != self.output and now - self.since >= self.hold_for(self.candidate):
+            self.output = self.candidate
         return self.output
 
     def progress(self, now):
@@ -131,9 +135,11 @@ class GestureRecognitionNode(Node):
         self.declare_parameter("height", 480)
         self.declare_parameter("mirror", True)         # selfie view: moving the hand right moves it right
         self.declare_parameter("model", "")            # gesture_recognizer.task (downloaded if missing)
-        self.declare_parameter("min_score", 0.6)       # lower model confidence counts as None
-        self.declare_parameter("hold_time", 0.5)       # s a gesture must be held before it is published
-        self.declare_parameter("stop_hold_time", 0.2)  # same for Open_Palm / Closed_Fist
+        self.declare_parameter("min_score", 0.5)         # lower model confidence counts as None
+        self.declare_parameter("hold_time", 0.5)         # s a gesture must be held before it is published
+        self.declare_parameter("stop_hold_time", 0.2)    # Open_Palm: stop quickly
+        self.declare_parameter("cancel_hold_time", 0.6)  # Closed_Fist: the hand passes through a fist
+                                                         # when it changes gesture
         self.declare_parameter("publish_rate", 10.0)
         self.declare_parameter("show_window", True)
 
@@ -150,7 +156,8 @@ class GestureRecognitionNode(Node):
             min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5)
         self.recognizer = vision.GestureRecognizer.create_from_options(options)
-        self.filter = GestureFilter(float(p("hold_time")), float(p("stop_hold_time")), none_hold=0.3)
+        self.filter = GestureFilter({"None": 0.3, "Open_Palm": float(p("stop_hold_time")),
+                                     "Closed_Fist": float(p("cancel_hold_time"))}, float(p("hold_time")))
         self.wave = WaveDetector()
 
         self.source = os.path.expanduser(self.video) if self.video else int(p("camera"))
@@ -166,10 +173,12 @@ class GestureRecognitionNode(Node):
         self.create_subscription(String, "robot_behavior/state", self._on_state, 10)
 
         self.stable = "None"
+        self.last_raw = None
         self.last_pub = self.last_ts = 0
         self.fps, self.t_fps, self.n_fps = 0.0, time.monotonic(), 0
         if self.show:
             cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
+            cv2.moveWindow(WINDOW, 0, 30)   # left of the screen; bai06.rviz opens RViz2 at x = 640
         self.get_logger().info(f"Webcam {self.source!r} -> MediaPipe -> /detected_gesture "
                                f"(min score {self.min_score}, hold {p('hold_time')} s)")
 
@@ -198,6 +207,8 @@ class GestureRecognitionNode(Node):
                 self.cap = self._open()
                 continue
             self._process(frame)
+            if not rclpy.ok():    # Ctrl-C / SIGTERM shut the context down
+                return
             rclpy.spin_once(self, timeout_sec=0.0)
             if self.show:
                 key = cv2.waitKey(1) & 0xFF
@@ -219,6 +230,9 @@ class GestureRecognitionNode(Node):
         if result.gestures:
             raw, score = result.gestures[0][0].category_name or "None", result.gestures[0][0].score
         label = raw if score >= self.min_score else "None"
+        if (raw, round(score, 1)) != self.last_raw:   # --log-level gesture_recognition_node:=debug
+            self.get_logger().debug(f"model: {raw} {score:.2f}")
+            self.last_raw = (raw, round(score, 1))
 
         waving = self.wave.update(landmarks, now)
         stable = self.filter.update(label, now)
@@ -287,7 +301,7 @@ def main():
     node = GestureRecognitionNode()
     try:
         node.run()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.close()
